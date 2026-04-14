@@ -4,7 +4,7 @@ description: Use when working with Yandex AI Studio APIs in Laravel — text gen
 license: MIT
 metadata:
   author: jazz-max
-  version: "1.0.0"
+  version: "1.2.0"
   domain: backend
   triggers: Yandex AI, YandexGPT, Yandex OCR, Yandex Vision, Yandex Embeddings, yandex-ai-laravel, Responses API Yandex, function calling Yandex
   role: specialist
@@ -23,7 +23,7 @@ metadata:
 
 # Yandex AI Laravel Specialist
 
-Expert in integrating Yandex AI Studio APIs with Laravel via the `jazz-max/yandex-ai-laravel` SDK. Covers text generation (Responses API), Vision OCR, and vector Embeddings.
+Expert in integrating Yandex AI Studio APIs with Laravel via the `jazz-max/yandex-ai-laravel` SDK (v1.2.0+). Covers text generation (Responses API), Vision OCR, and vector Embeddings. Includes built-in fallback parser for unreliable function calling and tool validation.
 
 ## When to Use This Skill
 
@@ -110,13 +110,27 @@ echo $response->id;                // response ID for dialog continuation
 echo $response->usage['total_tokens'];
 ```
 
-#### stream(array $params, Closure $onDelta, ?Closure $onComplete): Response
+#### stream(array $params, Closure $onDelta, ?Closure $onComplete, ?Closure $onFunctionCall): Response
 
 ```php
 YandexAi::responses()->stream(
     ['model' => 'yandexgpt-5-lite', 'input' => 'Tell a story'],
     onDelta: fn($chunk) => echo $chunk,
     onComplete: fn($resp) => logger()->info("Tokens: {$resp->totalTokens()}")
+);
+```
+
+Streaming with function calls (v1.2.0+):
+```php
+YandexAi::responses()->stream(
+    ['model' => 'yandexgpt-5-lite', 'input' => 'Weather?', 'tools' => $tools],
+    onDelta: fn($chunk) => echo $chunk,
+    onComplete: fn($resp) => null,
+    onFunctionCall: function (array $call) {
+        // Called when function call arguments streaming is complete
+        // $call = ['id' => '...', 'name' => '...', 'arguments' => [...]]
+        $result = executeFunction($call['name'], $call['arguments']);
+    }
 );
 ```
 
@@ -134,6 +148,8 @@ $reply = YandexAi::responses()->continue($response->id, [
 use JazzMax\YandexAi\Tools\FunctionTool;
 
 $tools = [
+    // IMPORTANT: descriptions MUST be < 15 words, English only
+    // FunctionTool::make() validates this and logs warnings automatically (v1.2.0+)
     FunctionTool::make('get_weather', 'Get weather for a city.', [
         'type'       => 'object',
         'properties' => [
@@ -144,18 +160,48 @@ $tools = [
 ];
 
 $response = YandexAi::responses()->create([
-    'model' => 'yandexgpt-5-lite',
-    'input' => 'Weather in Moscow?',
-    'tools' => $tools,
+    'model'        => 'yandexgpt-5-lite',
+    'instructions' => 'You are a helpful assistant with tools.', // SHORT, English, no "answer as code" or "use markdown"
+    'input'        => 'Weather in Moscow?',
+    'tools'        => $tools,
+    'temperature'  => 0.3, // low temperature improves function calling reliability
 ]);
 
 if ($response->hasFunctionCall()) {
     $call = $response->functionCall; // ['id' => ..., 'name' => ..., 'arguments' => ...]
+
+    // Check if function call was extracted from text via fallback parser (v1.2.0+)
+    // This means the model returned tool call as text, not as proper function_call item
+    if ($response->isFallbackFunctionCall) {
+        logger()->notice("Function call '{$call['name']}' extracted from text via fallback parser.");
+    }
+
     $result = getWeather($call['arguments']['city']);
     $final = YandexAi::responses()->submitToolOutput(
         $response->id, $call['id'], json_encode($result)
     );
 }
+```
+
+#### Tool Validation (v1.2.0+)
+
+`FunctionTool::make()` automatically validates tool definitions and logs warnings:
+- Description > 15 words → warning (causes model to return text instead of function_call)
+- Non-ASCII characters in description → warning (Russian descriptions break function calling)
+- Empty `properties` array → warning (PHP serialization bug)
+
+You can also validate manually:
+```php
+$warnings = FunctionTool::validate('my_tool', 'My description', $params);
+// Returns string[] of warning messages (empty if OK)
+```
+
+#### Building function_call_output (v1.2.0+)
+
+```php
+// Helper to build function_call_output items
+$output = FunctionTool::output($call['id'], json_encode($result));
+// Returns: ['type' => 'function_call_output', 'call_id' => '...', 'output' => '...']
 ```
 
 #### Background Tasks
@@ -203,19 +249,27 @@ $client->supportsReasoning('yandexgpt-5-pro'); // → true
 ### Response DTO
 
 ```php
-$response->id                  // string
-$response->model               // string
-$response->status              // 'completed' | 'in_progress' | 'failed'
-$response->text                // ?string — extracted text
-$response->functionCall        // ?array — ['id', 'name', 'arguments']
-$response->output              // array — raw output
-$response->usage               // array — token counts
-$response->raw                 // array — full API response
-$response->hasFunctionCall()   // bool
-$response->isCompleted()       // bool
-$response->promptTokens()      // int
-$response->completionTokens()  // int
-$response->totalTokens()       // int
+$response->id                        // string
+$response->model                     // string
+$response->status                    // 'completed' | 'in_progress' | 'failed'
+$response->text                      // ?string — extracted text (null if function call extracted from text)
+$response->functionCall              // ?array — ['id', 'name', 'arguments']
+$response->output                    // array — raw output
+$response->usage                     // array — token counts
+$response->raw                       // array — full API response
+$response->isFallbackFunctionCall    // bool — true if function call was extracted from text via fallback parser (v1.2.0+)
+$response->hasFunctionCall()         // bool
+$response->isCompleted()             // bool
+$response->promptTokens()            // int
+$response->completionTokens()        // int
+$response->totalTokens()             // int
+
+// Usage details (v1.2.0+):
+$response->usage['prompt_tokens']     // int — input tokens
+$response->usage['completion_tokens'] // int — output tokens
+$response->usage['total_tokens']      // int — total
+$response->usage['cached_tokens']     // int — cached input tokens (charged at 50%)
+$response->usage['reasoning_tokens']  // int — reasoning tokens (Pro models only)
 ```
 
 ---
@@ -342,9 +396,14 @@ Parameter mapping from OpenAI:
 
 ### 4. Function calling is fragile
 - Tool descriptions MUST be **< 15 words** and in **English** — otherwise the model writes `[tool_name]{}` as plain text
+- `FunctionTool::make()` validates descriptions automatically (v1.2.0+) and logs warnings for long/non-English descriptions
 - System prompt for function calling should be **< 250 chars, English**
+- **NEVER** include "answer as code", "use markdown", "format output as code block" or similar formatting instructions in `instructions` when using tools — this causes the model to output function calls as formatted text/code instead of proper `function_call` items
 - NEVER use empty `properties: {}` — PHP's `stdClass` serializes to `[]` not `{}`
-- Always use `FunctionTool::make()` which adds a `_unused` dummy property automatically
+- Always use `FunctionTool::make()` which adds a `_unused` dummy property automatically and validates descriptions
+- The SDK includes a **fallback parser** (`FunctionCallFallbackParser`) that extracts function calls from text responses. It handles `[tool]{}`, `tool{}`, and `tool()` patterns. Enabled by default; disable via `YANDEX_AI_FUNCTION_CALL_FALLBACK=false`
+- Check `$response->isFallbackFunctionCall` to monitor when the model returns tool calls as text — this indicates degraded behavior that should be investigated
+- Use low temperature (0.1–0.3) for function calling requests — higher values reduce reliability
 - Always test with curl before deploying
 
 ### 5. Only gemma-3-27b-it supports images
@@ -399,14 +458,18 @@ Config file: `config/yandex-ai.php`
 | `proxy` | `YANDEX_AI_PROXY` | `null` |
 | `verify_ssl` | `YANDEX_AI_VERIFY_SSL` | `false` |
 | `default_model` | `YANDEX_AI_MODEL` | `yandexgpt-5-lite` |
+| `function_call_fallback` | `YANDEX_AI_FUNCTION_CALL_FALLBACK` | `true` |
 
 ---
 
 ## Constraints
 
 ### MUST DO
-- Always use `FunctionTool::make()` for building tool definitions
+- Always use `FunctionTool::make()` for building tool definitions — it validates descriptions and adds dummy property for empty params
 - Keep tool descriptions < 15 words, in English
+- Check `$response->isFallbackFunctionCall` after function calling requests to detect degraded behavior
+- When using tools, keep `instructions` short (< 250 chars), in English, and avoid any formatting requirements ("answer as code", "use markdown", etc.)
+- Use low temperature (0.1–0.3) for function calling requests
 - Use `OcrModel` enum for OCR model selection
 - Catch `YandexAiException` for API error handling
 - Use `calculateCostRub()` for cost tracking
@@ -418,6 +481,7 @@ Config file: `config/yandex-ai.php`
 - Send plain model names without URI format (SDK handles this, but don't bypass)
 - Use empty `properties` in function tools (causes serialization bug)
 - Write tool descriptions in Russian or > 15 words
+- Include "answer as code", "format as markdown", "use code blocks" or similar formatting requirements in `instructions` when `tools` are provided — this causes the model to print function calls as text/code instead of returning proper `function_call` output items
 - Send images to any model except `gemma-3-27b-it`
 - Use image URLs (only base64 supported)
 - Apply OpenAI pricing formulas (per 1M USD) — Yandex is per 1K RUB
