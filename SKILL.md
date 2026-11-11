@@ -406,8 +406,8 @@ Parameter mapping from OpenAI:
 - Use low temperature (0.1–0.3) for function calling requests — higher values reduce reliability
 - Always test with curl before deploying
 
-### 5. Only gemma-3-27b-it supports images
-No other model accepts image input. Images must be base64-embedded (`data:image/jpeg;base64,...`). URL references are NOT supported.
+### 5. Images: only qwen3.6-35b-a3b
+`gemma-3-27b-it` was removed from Yandex AI Studio in 2026 and now returns 400 Bad Request. `qwen3.6-35b-a3b` is the only model that accepts images; `aliceai-llm*` and `yandexgpt-*` return empty output for them. Qwen reasons by default — pass `'reasoning' => ['effort' => 'none']` for fast, clean output, or give it 1000+ `max_output_tokens` for hard images (curved/rotated text). List what your folder has via `GET /v1/models`. Images must be base64-embedded (`data:image/jpeg;base64,...`). URL references are NOT supported.
 
 ### 6. Pricing is RUB per 1000 tokens
 NOT USD per 1M. Formula: `(tokens / 1000) * price`. Cached tokens cost 50% of prompt price. Do NOT apply OpenAI-style division.
@@ -435,7 +435,8 @@ Config is cached in worker memory. After `.env` changes: `php artisan config:cle
 | `yandexgpt-5-pro` | 1.2 / 1.2 | Yes | No |
 | `yandexgpt-5.1` | 0.8 / 0.8 | Yes | No |
 | `aliceai-llm` | 0.5 / 1.2 | No | No |
-| `gemma-3-27b-it` | 0.4 / 0.4 | No | Yes (base64) |
+| `qwen3.6-35b-a3b` | ~0.4 / 0.4 (verify) | Yes, on by default | Yes (base64) |
+| ~~`gemma-3-27b-it`~~ | removed in 2026 (400) | — | — |
 
 ### Embeddings
 - `text-search-doc/latest` — for indexing documents
@@ -482,8 +483,8 @@ Config file: `config/yandex-ai.php`
 - Use empty `properties` in function tools (causes serialization bug)
 - Write tool descriptions in Russian or > 15 words
 - Include "answer as code", "format as markdown", "use code blocks" or similar formatting requirements in `instructions` when `tools` are provided — this causes the model to print function calls as text/code instead of returning proper `function_call` output items
-- Send images to any model except `gemma-3-27b-it`
+- Send images to any model except `qwen3.6-35b-a3b` (`gemma-3-27b-it` is removed)
 - Use image URLs (only base64 supported)
 - Apply OpenAI pricing formulas (per 1M USD) — Yandex is per 1K RUB
 - Send `['*']` languages to `handwritten`/`table` OCR models
-- Add `reasoning` parameter to non-Pro models
+- Add `reasoning` parameter to models other than Pro / 5.1 / Qwen
